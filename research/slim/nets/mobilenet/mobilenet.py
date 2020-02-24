@@ -23,9 +23,9 @@ import copy
 import os
 
 import tensorflow as tf
+from tensorflow.contrib import slim as contrib_slim
 
-
-slim = tf.contrib.slim
+slim = contrib_slim
 
 
 @slim.add_arg_scope
@@ -54,8 +54,10 @@ def _fixed_padding(inputs, kernel_size, rate=1):
   pad_total = [kernel_size_effective[0] - 1, kernel_size_effective[1] - 1]
   pad_beg = [pad_total[0] // 2, pad_total[1] // 2]
   pad_end = [pad_total[0] - pad_beg[0], pad_total[1] - pad_beg[1]]
-  padded_inputs = tf.pad(inputs, [[0, 0], [pad_beg[0], pad_end[0]],
-                                  [pad_beg[1], pad_end[1]], [0, 0]])
+  padded_inputs = tf.pad(
+      tensor=inputs,
+      paddings=[[0, 0], [pad_beg[0], pad_end[0]], [pad_beg[1], pad_end[1]],
+                [0, 0]])
   return padded_inputs
 
 
@@ -66,7 +68,7 @@ def _make_divisible(v, divisor, min_value=None):
   # Make sure that round down does not go down by more than 10%.
   if new_v < 0.9 * v:
     new_v += divisor
-  return new_v
+  return int(new_v)
 
 
 @contextlib.contextmanager
@@ -109,9 +111,40 @@ def depth_multiplier(output_params,
 _Op = collections.namedtuple('Op', ['op', 'params', 'multiplier_func'])
 
 
-def op(opfunc, **params):
-  multiplier = params.pop('multiplier_transorm', depth_multiplier)
+def op(opfunc, multiplier_func=depth_multiplier, **params):
+  multiplier = params.pop('multiplier_transform', multiplier_func)
   return _Op(opfunc, params=params, multiplier_func=multiplier)
+
+
+class NoOpScope(object):
+  """No-op context manager."""
+
+  def __enter__(self):
+    return None
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    return False
+
+
+def safe_arg_scope(funcs, **kwargs):
+  """Returns `slim.arg_scope` with all None arguments removed.
+
+  Arguments:
+    funcs: Functions to pass to `arg_scope`.
+    **kwargs: Arguments to pass to `arg_scope`.
+
+  Returns:
+    arg_scope or No-op context manager.
+
+  Note: can be useful if None value should be interpreted as "do not overwrite
+    this parameter value".
+  """
+  filtered_args = {name: value for name, value in kwargs.items()
+                   if value is not None}
+  if filtered_args:
+    return slim.arg_scope(funcs, **filtered_args)
+  else:
+    return NoOpScope()
 
 
 @slim.add_arg_scope
@@ -163,7 +196,9 @@ def mobilenet_base(  # pylint: disable=invalid-name
       only. It is safe to set it to the value matching
       training_scope(is_training=...). It is also safe to explicitly set
       it to False, even if there is outer training_scope set to to training.
-      (The network will be built in inference mode).
+      (The network will be built in inference mode). If this is set to None,
+      no arg_scope is added for slim.batch_norm's is_training parameter.
+
   Returns:
     tensor_out: output tensor.
     end_points: a set of activations for external use, for example summaries or
@@ -193,8 +228,9 @@ def mobilenet_base(  # pylint: disable=invalid-name
   # since it is also set by mobilenet_scope
   # c) set all defaults
   # d) set all extra overrides.
+  # pylint: disable=g-backslash-continuation
   with _scope_all(scope, default_scope='Mobilenet'), \
-      slim.arg_scope([slim.batch_norm], is_training=is_training), \
+      safe_arg_scope([slim.batch_norm], is_training=is_training), \
       _set_arg_scope_defaults(conv_defs_defaults), \
       _set_arg_scope_defaults(conv_defs_overrides):
     # The current_stride variable keeps track of the output stride of the
@@ -229,9 +265,16 @@ def mobilenet_base(  # pylint: disable=invalid-name
         current_stride *= stride
       # Update params.
       params['stride'] = layer_stride
-      # Only insert rate to params if rate > 1.
+      # Only insert rate to params if rate > 1 and kernel size is not [1, 1].
       if layer_rate > 1:
-        params['rate'] = layer_rate
+        if tuple(params.get('kernel_size', [])) != (1, 1):
+          # We will apply atrous rate in the following cases:
+          # 1) When kernel_size is not in params, the operation then uses
+          #   default kernel size 3x3.
+          # 2) When kernel_size is in params, and if the kernel_size is not
+          #   equal to (1, 1) (there is no need to apply atrous convolution to
+          #   any 1x1 convolution).
+          params['rate'] = layer_rate
       # Set padding
       if use_explicit_padding:
         if 'kernel_size' in params:
@@ -263,8 +306,8 @@ def mobilenet_base(  # pylint: disable=invalid-name
 
 @contextlib.contextmanager
 def _scope_all(scope, default_scope=None):
-  with tf.variable_scope(scope, default_name=default_scope) as s,\
-       tf.name_scope(s.original_name_scope):
+  with tf.compat.v1.variable_scope(scope, default_name=default_scope) as s,\
+       tf.compat.v1.name_scope(s.original_name_scope):
     yield s
 
 
@@ -320,7 +363,7 @@ def mobilenet(inputs,
   if len(input_shape) != 4:
     raise ValueError('Expected rank 4 input, was: %d' % len(input_shape))
 
-  with tf.variable_scope(scope, 'Mobilenet', reuse=reuse) as scope:
+  with tf.compat.v1.variable_scope(scope, 'Mobilenet', reuse=reuse) as scope:
     inputs = tf.identity(inputs, 'input')
     net, end_points = mobilenet_base(inputs, scope=scope, **mobilenet_args)
     if base_only:
@@ -328,7 +371,7 @@ def mobilenet(inputs,
 
     net = tf.identity(net, name='embedding')
 
-    with tf.variable_scope('Logits'):
+    with tf.compat.v1.variable_scope('Logits'):
       net = global_pool(net)
       end_points['global_pool'] = net
       if not num_classes:
@@ -341,7 +384,7 @@ def mobilenet(inputs,
           num_classes, [1, 1],
           activation_fn=None,
           normalizer_fn=None,
-          biases_initializer=tf.zeros_initializer(),
+          biases_initializer=tf.compat.v1.zeros_initializer(),
           scope='Conv2d_1c_1x1')
 
       logits = tf.squeeze(logits, [1, 2])
@@ -353,7 +396,7 @@ def mobilenet(inputs,
   return logits, end_points
 
 
-def global_pool(input_tensor, pool_op=tf.nn.avg_pool):
+def global_pool(input_tensor, pool_op=tf.compat.v2.nn.avg_pool2d):
   """Applies avg pool to produce 1x1 output.
 
   NOTE: This function is funcitonally equivalenet to reduce_mean, but it has
@@ -367,9 +410,11 @@ def global_pool(input_tensor, pool_op=tf.nn.avg_pool):
   """
   shape = input_tensor.get_shape().as_list()
   if shape[1] is None or shape[2] is None:
-    kernel_size = tf.convert_to_tensor(
-        [1, tf.shape(input_tensor)[1],
-         tf.shape(input_tensor)[2], 1])
+    kernel_size = tf.convert_to_tensor(value=[
+        1,
+        tf.shape(input=input_tensor)[1],
+        tf.shape(input=input_tensor)[2], 1
+    ])
   else:
     kernel_size = [1, shape[1], shape[2], 1]
   output = pool_op(
@@ -394,14 +439,16 @@ def training_scope(is_training=True,
      # initialized appropriately.
   Args:
     is_training: if set to False this will ensure that all customizations are
-    set to non-training mode. This might be helpful for code that is reused
-    across both training/evaluation, but most of the time training_scope with
-    value False is not needed.
+      set to non-training mode. This might be helpful for code that is reused
+      across both training/evaluation, but most of the time training_scope with
+      value False is not needed. If this is set to None, the parameters is not
+      added to the batch_norm arg_scope.
 
     weight_decay: The weight decay to use for regularizing the model.
     stddev: Standard deviation for initialization, if negative uses xavier.
-    dropout_keep_prob: dropout keep probability
-    bn_decay: decay for the batch norm moving averages.
+    dropout_keep_prob: dropout keep probability (not set if equals to None).
+    bn_decay: decay for the batch norm moving averages (not set if equals to
+      None).
 
   Returns:
     An argument scope to use via arg_scope.
@@ -409,14 +456,14 @@ def training_scope(is_training=True,
   # Note: do not introduce parameters that would change the inference
   # model here (for example whether to use bias), modify conv_def instead.
   batch_norm_params = {
-      'is_training': is_training,
       'decay': bn_decay,
+      'is_training': is_training
   }
-
   if stddev < 0:
     weight_intitializer = slim.initializers.xavier_initializer()
   else:
-    weight_intitializer = tf.truncated_normal_initializer(stddev=stddev)
+    weight_intitializer = tf.compat.v1.truncated_normal_initializer(
+        stddev=stddev)
 
   # Set weight_decay for weights in Conv and FC layers.
   with slim.arg_scope(
@@ -424,8 +471,8 @@ def training_scope(is_training=True,
       weights_initializer=weight_intitializer,
       normalizer_fn=slim.batch_norm), \
       slim.arg_scope([mobilenet_base, mobilenet], is_training=is_training),\
-      slim.arg_scope([slim.batch_norm], **batch_norm_params), \
-      slim.arg_scope([slim.dropout], is_training=is_training,
+      safe_arg_scope([slim.batch_norm], **batch_norm_params), \
+      safe_arg_scope([slim.dropout], is_training=is_training,
                      keep_prob=dropout_keep_prob), \
       slim.arg_scope([slim.conv2d], \
                      weights_regularizer=slim.l2_regularizer(weight_decay)), \

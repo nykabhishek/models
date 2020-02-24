@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +14,17 @@
 # limitations under the License.
 # ==============================================================================
 
+"""Converts ADE20K data to TFRecord file format with Example protos."""
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 import math
 import os
 import random
-import string
 import sys
 import build_data
+from six.moves import range
 import tensorflow as tf
 
 FLAGS = tf.app.flags.FLAGS
@@ -44,12 +50,13 @@ tf.app.flags.DEFINE_string(
 
 tf.app.flags.DEFINE_string(
     'output_dir', './ADE20K/tfrecord',
-    'Path to save converted SSTable of Tensorflow example')
+    'Path to save converted tfrecord of Tensorflow example')
 
 _NUM_SHARDS = 4
 
+
 def _convert_dataset(dataset_split, dataset_dir, dataset_label_dir):
-  """ Converts the ADE20k dataset into into tfrecord format (SSTable).
+  """Converts the ADE20k dataset into into tfrecord format.
 
   Args:
     dataset_split: Dataset split (e.g., train, val).
@@ -65,13 +72,13 @@ def _convert_dataset(dataset_split, dataset_dir, dataset_label_dir):
   seg_names = []
   for f in img_names:
     # get the filename without the extension
-    basename = os.path.basename(f).split(".")[0]
+    basename = os.path.basename(f).split('.')[0]
     # cover its corresponding *_seg.png
     seg = os.path.join(dataset_label_dir, basename+'.png')
     seg_names.append(seg)
 
   num_images = len(img_names)
-  num_per_shard = int(math.ceil(num_images / float(_NUM_SHARDS)))
+  num_per_shard = int(math.ceil(num_images / _NUM_SHARDS))
 
   image_reader = build_data.ImageReader('jpeg', channels=3)
   label_reader = build_data.ImageReader('png', channels=1)
@@ -89,11 +96,11 @@ def _convert_dataset(dataset_split, dataset_dir, dataset_label_dir):
         sys.stdout.flush()
         # Read the image.
         image_filename = img_names[i]
-        image_data = tf.gfile.FastGFile(image_filename, 'r').read()
+        image_data = tf.gfile.FastGFile(image_filename, 'rb').read()
         height, width = image_reader.read_image_dims(image_data)
         # Read the semantic segmentation annotation.
         seg_filename = seg_names[i]
-        seg_data = tf.gfile.FastGFile(seg_filename, 'r').read()
+        seg_data = tf.gfile.FastGFile(seg_filename, 'rb').read()
         seg_height, seg_width = label_reader.read_image_dims(seg_data)
         if height != seg_height or width != seg_width:
           raise RuntimeError('Shape mismatched between image and label.')
@@ -104,10 +111,13 @@ def _convert_dataset(dataset_split, dataset_dir, dataset_label_dir):
     sys.stdout.write('\n')
     sys.stdout.flush()
 
+
 def main(unused_argv):
   tf.gfile.MakeDirs(FLAGS.output_dir)
-  _convert_dataset('train', FLAGS.train_image_folder, FLAGS.train_image_label_folder)
+  _convert_dataset(
+      'train', FLAGS.train_image_folder, FLAGS.train_image_label_folder)
   _convert_dataset('val', FLAGS.val_image_folder, FLAGS.val_image_label_folder)
+
 
 if __name__ == '__main__':
   tf.app.run()

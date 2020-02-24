@@ -57,12 +57,23 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
+from tensorflow.contrib import slim as contrib_slim
 
 from nets import resnet_utils
 
 
 resnet_arg_scope = resnet_utils.resnet_arg_scope
-slim = tf.contrib.slim
+slim = contrib_slim
+
+
+class NoOpScope(object):
+  """No-op context manager."""
+
+  def __enter__(self):
+    return None
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    return False
 
 
 @slim.add_arg_scope
@@ -98,7 +109,7 @@ def bottleneck(inputs,
   Returns:
     The ResNet unit's output.
   """
-  with tf.variable_scope(scope, 'bottleneck_v1', [inputs]) as sc:
+  with tf.compat.v1.variable_scope(scope, 'bottleneck_v1', [inputs]) as sc:
     depth_in = slim.utils.last_dimension(inputs.get_shape(), min_rank=4)
     if depth == depth_in:
       shortcut = resnet_utils.subsample(inputs, stride, 'shortcut')
@@ -169,7 +180,9 @@ def resnet_v1(inputs,
       is a resnet_utils.Block object describing the units in the block.
     num_classes: Number of predicted classes for classification tasks.
       If 0 or None, we return the features before the logit layer.
-    is_training: whether batch_norm layers are in training mode.
+    is_training: whether batch_norm layers are in training mode. If this is set
+      to None, the callers can specify slim.batch_norm's is_training parameter
+      from an outer slim.arg_scope.
     global_pool: If True, we perform global average pooling before computing the
       logits. Set to True for image classification, False for dense prediction.
     output_stride: If None, then the output will be computed at the nominal
@@ -206,12 +219,14 @@ def resnet_v1(inputs,
   Raises:
     ValueError: If the target output_stride is not valid.
   """
-  with tf.variable_scope(scope, 'resnet_v1', [inputs], reuse=reuse) as sc:
+  with tf.compat.v1.variable_scope(
+      scope, 'resnet_v1', [inputs], reuse=reuse) as sc:
     end_points_collection = sc.original_name_scope + '_end_points'
     with slim.arg_scope([slim.conv2d, bottleneck,
                          resnet_utils.stack_blocks_dense],
                         outputs_collections=end_points_collection):
-      with slim.arg_scope([slim.batch_norm], is_training=is_training):
+      with (slim.arg_scope([slim.batch_norm], is_training=is_training)
+            if is_training is not None else NoOpScope()):
         net = inputs
         if include_root_block:
           if output_stride is not None:
@@ -228,7 +243,8 @@ def resnet_v1(inputs,
 
         if global_pool:
           # Global average pooling.
-          net = tf.reduce_mean(net, [1, 2], name='pool5', keep_dims=True)
+          net = tf.reduce_mean(
+              input_tensor=net, axis=[1, 2], name='pool5', keepdims=True)
           end_points['global_pool'] = net
         if num_classes:
           net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
@@ -273,14 +289,21 @@ def resnet_v1_50(inputs,
                  output_stride=None,
                  spatial_squeeze=True,
                  store_non_strided_activations=False,
+                 min_base_depth=8,
+                 depth_multiplier=1,
                  reuse=None,
                  scope='resnet_v1_50'):
   """ResNet-50 model of [1]. See resnet_v1() for arg and return description."""
+  depth_func = lambda d: max(int(d * depth_multiplier), min_base_depth)
   blocks = [
-      resnet_v1_block('block1', base_depth=64, num_units=3, stride=2),
-      resnet_v1_block('block2', base_depth=128, num_units=4, stride=2),
-      resnet_v1_block('block3', base_depth=256, num_units=6, stride=2),
-      resnet_v1_block('block4', base_depth=512, num_units=3, stride=1),
+      resnet_v1_block('block1', base_depth=depth_func(64), num_units=3,
+                      stride=2),
+      resnet_v1_block('block2', base_depth=depth_func(128), num_units=4,
+                      stride=2),
+      resnet_v1_block('block3', base_depth=depth_func(256), num_units=6,
+                      stride=2),
+      resnet_v1_block('block4', base_depth=depth_func(512), num_units=3,
+                      stride=1),
   ]
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
@@ -297,14 +320,21 @@ def resnet_v1_101(inputs,
                   output_stride=None,
                   spatial_squeeze=True,
                   store_non_strided_activations=False,
+                  min_base_depth=8,
+                  depth_multiplier=1,
                   reuse=None,
                   scope='resnet_v1_101'):
   """ResNet-101 model of [1]. See resnet_v1() for arg and return description."""
+  depth_func = lambda d: max(int(d * depth_multiplier), min_base_depth)
   blocks = [
-      resnet_v1_block('block1', base_depth=64, num_units=3, stride=2),
-      resnet_v1_block('block2', base_depth=128, num_units=4, stride=2),
-      resnet_v1_block('block3', base_depth=256, num_units=23, stride=2),
-      resnet_v1_block('block4', base_depth=512, num_units=3, stride=1),
+      resnet_v1_block('block1', base_depth=depth_func(64), num_units=3,
+                      stride=2),
+      resnet_v1_block('block2', base_depth=depth_func(128), num_units=4,
+                      stride=2),
+      resnet_v1_block('block3', base_depth=depth_func(256), num_units=23,
+                      stride=2),
+      resnet_v1_block('block4', base_depth=depth_func(512), num_units=3,
+                      stride=1),
   ]
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
@@ -321,14 +351,21 @@ def resnet_v1_152(inputs,
                   output_stride=None,
                   store_non_strided_activations=False,
                   spatial_squeeze=True,
+                  min_base_depth=8,
+                  depth_multiplier=1,
                   reuse=None,
                   scope='resnet_v1_152'):
   """ResNet-152 model of [1]. See resnet_v1() for arg and return description."""
+  depth_func = lambda d: max(int(d * depth_multiplier), min_base_depth)
   blocks = [
-      resnet_v1_block('block1', base_depth=64, num_units=3, stride=2),
-      resnet_v1_block('block2', base_depth=128, num_units=8, stride=2),
-      resnet_v1_block('block3', base_depth=256, num_units=36, stride=2),
-      resnet_v1_block('block4', base_depth=512, num_units=3, stride=1),
+      resnet_v1_block('block1', base_depth=depth_func(64), num_units=3,
+                      stride=2),
+      resnet_v1_block('block2', base_depth=depth_func(128), num_units=8,
+                      stride=2),
+      resnet_v1_block('block3', base_depth=depth_func(256), num_units=36,
+                      stride=2),
+      resnet_v1_block('block4', base_depth=depth_func(512), num_units=3,
+                      stride=1),
   ]
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
@@ -345,14 +382,21 @@ def resnet_v1_200(inputs,
                   output_stride=None,
                   store_non_strided_activations=False,
                   spatial_squeeze=True,
+                  min_base_depth=8,
+                  depth_multiplier=1,
                   reuse=None,
                   scope='resnet_v1_200'):
   """ResNet-200 model of [2]. See resnet_v1() for arg and return description."""
+  depth_func = lambda d: max(int(d * depth_multiplier), min_base_depth)
   blocks = [
-      resnet_v1_block('block1', base_depth=64, num_units=3, stride=2),
-      resnet_v1_block('block2', base_depth=128, num_units=24, stride=2),
-      resnet_v1_block('block3', base_depth=256, num_units=36, stride=2),
-      resnet_v1_block('block4', base_depth=512, num_units=3, stride=1),
+      resnet_v1_block('block1', base_depth=depth_func(64), num_units=3,
+                      stride=2),
+      resnet_v1_block('block2', base_depth=depth_func(128), num_units=24,
+                      stride=2),
+      resnet_v1_block('block3', base_depth=depth_func(256), num_units=36,
+                      stride=2),
+      resnet_v1_block('block4', base_depth=depth_func(512), num_units=3,
+                      stride=1),
   ]
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
